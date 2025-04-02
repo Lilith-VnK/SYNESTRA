@@ -17,6 +17,8 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
+#fuck my brain
+
 class WAFBypassEngine:
     @staticmethod
     def generate_evasion(payload):
